@@ -1,10 +1,11 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 
 import { demoSources } from "./mock-source-data.js";
 
-const DATA_DIR = path.resolve(process.cwd(), "data");
+const DATA_DIR = process.env.VERCEL ? os.tmpdir() : path.resolve(process.cwd(), "data");
 const DEFAULT_DB_PATH = path.join(DATA_DIR, "monitoring.sqlite");
 
 let sqlPromise: Promise<SqlJsStatic> | null = null;

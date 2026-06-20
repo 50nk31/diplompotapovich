@@ -12,9 +12,9 @@ export function renderVacancies(
     <section class="page-intro">
       <div>
         <p class="eyebrow">Каталог вакансий</p>
-        <h1>Нормализованный поток по специальностям и регионам</h1>
+        <h1>Единый список вакансий по специальностям и регионам</h1>
       </div>
-      <div class="intro-note">Всего в выдаче: ${data.items.length}</div>
+      <div class="intro-note">В выдаче: ${data.items.length}</div>
     </section>
 
     <section class="panel">
@@ -61,7 +61,7 @@ export function renderVacancies(
       <article class="panel panel-table">
         <div class="panel-head">
           <h2>Список вакансий</h2>
-          <span class="panel-meta">Плотный режим просмотра</span>
+          <span class="panel-meta">Табличный режим просмотра</span>
         </div>
         <div class="table-wrap">
           <table>
@@ -156,7 +156,7 @@ export function renderVacancies(
                               (item) => `
                                 <div class="history-row">
                                   <strong>${item.fieldName}</strong>
-                                  <p>${item.oldValue ?? "—"} → ${item.newValue ?? "—"}</p>
+                                  <p>${item.oldValue ?? "-"} -> ${item.newValue ?? "-"}</p>
                                   <small>${formatDate(item.changedAt)}</small>
                                 </div>
                               `,
