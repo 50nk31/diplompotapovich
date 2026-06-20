@@ -1,4 +1,5 @@
 import type { Database } from "sql.js";
+import axios from "axios";
 
 import type {
   AnalyticsPayload,
@@ -31,6 +32,41 @@ type MonitoringRunOptions = {
   trigger?: "seed" | "manual" | "schedule";
   ruleId?: number | null;
   actor?: string;
+};
+
+type IncomingVacancy = {
+  externalId: string;
+  title: string;
+  company: string;
+  location: string;
+  specialty: string;
+  salaryText: string | null;
+  salaryMin: number | null;
+  salaryMax: number | null;
+  employmentType: string | null;
+  sourceUrl: string;
+  summary: string;
+  description: string;
+  publishedAt: string | null;
+};
+
+type HhVacancyResponse = {
+  items: Array<{
+    id: string;
+    name: string;
+    alternate_url?: string;
+    published_at?: string;
+    employer?: { name?: string };
+    area?: { name?: string };
+    professional_roles?: Array<{ name?: string }>;
+    snippet?: { requirement?: string | null; responsibility?: string | null };
+    employment?: { name?: string };
+    salary?: {
+      from?: number | null;
+      to?: number | null;
+      currency?: string | null;
+    } | null;
+  }>;
 };
 
 const defaultCollectionFilters: CollectionFilters = {
@@ -199,6 +235,89 @@ function getRuleIdsBySpecialty(db: Database, specialty: string) {
   );
 }
 
+function createSalaryText(salary: HhVacancyResponse["items"][number]["salary"]) {
+  if (!salary || (!salary.from && !salary.to)) {
+    return null;
+  }
+
+  const currency = salary.currency === "RUR" ? "руб." : (salary.currency ?? "").trim();
+
+  if (salary.from && salary.to) {
+    return `${salary.from.toLocaleString("ru-RU")} - ${salary.to.toLocaleString("ru-RU")} ${currency}`.trim();
+  }
+
+  if (salary.from) {
+    return `от ${salary.from.toLocaleString("ru-RU")} ${currency}`.trim();
+  }
+
+  return `до ${salary.to?.toLocaleString("ru-RU")} ${currency}`.trim();
+}
+
+function compactText(value: string | null | undefined) {
+  return (value ?? "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function fetchHhVacancies(): Promise<IncomingVacancy[]> {
+  const response = await axios.get<HhVacancyResponse>("https://api.hh.ru/vacancies", {
+    params: {
+      text: "frontend OR typescript OR аналитик OR linux",
+      area: 113,
+      per_page: 20,
+      order_by: "publication_time",
+    },
+    headers: {
+      "User-Agent": "vacancy-monitoring-prototype/1.0",
+      "HH-User-Agent": "vacancy-monitoring-prototype/1.0",
+    },
+    timeout: 3500,
+  });
+
+  return response.data.items.map((item) => {
+    const requirement = compactText(item.snippet?.requirement);
+    const responsibility = compactText(item.snippet?.responsibility);
+    const summary = [requirement, responsibility].filter(Boolean).join(" ");
+    const specialty = item.professional_roles?.[0]?.name || "Вакансии hh.ru";
+
+    return {
+      externalId: `hh-${item.id}`,
+      title: item.name,
+      company: item.employer?.name || "Компания не указана",
+      location: item.area?.name || "Регион не указан",
+      specialty,
+      salaryText: createSalaryText(item.salary),
+      salaryMin: item.salary?.from ?? null,
+      salaryMax: item.salary?.to ?? null,
+      employmentType: item.employment?.name ?? null,
+      sourceUrl: item.alternate_url || "https://hh.ru",
+      summary: summary || "Описание доступно на странице вакансии.",
+      description: summary || "Описание доступно на странице вакансии.",
+      publishedAt: item.published_at ?? null,
+    };
+  });
+}
+
+function getOrCreateHhSource(db: Database) {
+  const existing = queryRows<{ id: number }>(db, "SELECT id FROM sources WHERE baseUrl = ? ORDER BY id LIMIT 1", [
+    "https://hh.ru",
+  ])[0];
+
+  if (existing) {
+    return Number(existing.id);
+  }
+
+  runStatement(
+    db,
+    `INSERT INTO sources (name, baseUrl, specialty, region, status, lastCheckedAt, successRate, responseTimeMs, isDemo)
+     VALUES (?, ?, ?, ?, ?, NULL, ?, ?, 0)`,
+    ["hh.ru", "https://hh.ru", "Вакансии hh.ru", "Россия", "active", 95, 900],
+  );
+
+  return getScalarNumber(db, "SELECT last_insert_rowid() AS value");
+}
+
 function createPublishedDate(offsetDays: number) {
   const date = new Date();
   date.setDate(date.getDate() - offsetDays);
@@ -223,6 +342,100 @@ function createVariant(index: number, runNumber: number) {
     salaryMax,
     isUpdated,
   };
+}
+
+function upsertVacancy(
+  db: Database,
+  sourceId: number,
+  sourceName: string,
+  vacancy: IncomingVacancy,
+  timestamp: string,
+  initialSeed: boolean,
+) {
+  const ruleIds = getRuleIdsBySpecialty(db, vacancy.specialty);
+  const existingRow = queryRows<Record<string, unknown>>(
+    db,
+    "SELECT * FROM vacancies WHERE sourceId = ? AND externalId = ?",
+    [sourceId, vacancy.externalId],
+  )[0];
+
+  if (!existingRow) {
+    runStatement(
+      db,
+      `INSERT INTO vacancies (
+        externalId, title, company, location, specialty, salaryText, salaryMin, salaryMax,
+        employmentType, sourceId, sourceName, sourceUrl, summary, description, publishedAt,
+        firstSeenAt, lastSeenAt, status, matchedRuleIds
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        vacancy.externalId,
+        vacancy.title,
+        vacancy.company,
+        vacancy.location,
+        vacancy.specialty,
+        vacancy.salaryText,
+        vacancy.salaryMin,
+        vacancy.salaryMax,
+        vacancy.employmentType,
+        sourceId,
+        sourceName,
+        vacancy.sourceUrl,
+        vacancy.summary,
+        vacancy.description,
+        vacancy.publishedAt,
+        timestamp,
+        timestamp,
+        "new",
+        JSON.stringify(ruleIds),
+      ],
+    );
+
+    const vacancyId = getScalarNumber(db, "SELECT last_insert_rowid() AS value");
+    runStatement(
+      db,
+      "INSERT INTO vacancy_history (vacancyId, changedAt, fieldName, oldValue, newValue) VALUES (?, ?, ?, ?, ?)",
+      [vacancyId, timestamp, "status", null, "new"],
+    );
+    return;
+  }
+
+  const existing = mapVacancy(existingRow);
+  const hasSalaryChanged = existing.salaryText !== vacancy.salaryText;
+  const newStatus = hasSalaryChanged ? "updated" : initialSeed ? "new" : "unchanged";
+
+  runStatement(
+    db,
+    `UPDATE vacancies
+     SET title = ?, company = ?, location = ?, specialty = ?, salaryText = ?, salaryMin = ?, salaryMax = ?,
+         employmentType = ?, sourceUrl = ?, summary = ?, description = ?, publishedAt = ?, lastSeenAt = ?, status = ?, matchedRuleIds = ?
+     WHERE id = ?`,
+    [
+      vacancy.title,
+      vacancy.company,
+      vacancy.location,
+      vacancy.specialty,
+      vacancy.salaryText,
+      vacancy.salaryMin,
+      vacancy.salaryMax,
+      vacancy.employmentType,
+      vacancy.sourceUrl,
+      vacancy.summary,
+      vacancy.description,
+      vacancy.publishedAt,
+      timestamp,
+      newStatus,
+      JSON.stringify(ruleIds),
+      existing.id,
+    ],
+  );
+
+  if (hasSalaryChanged) {
+    runStatement(
+      db,
+      "INSERT INTO vacancy_history (vacancyId, changedAt, fieldName, oldValue, newValue) VALUES (?, ?, ?, ?, ?)",
+      [existing.id, timestamp, "salaryText", existing.salaryText, vacancy.salaryText],
+    );
+  }
 }
 
 async function ensureStarterCollection(db: Database) {
@@ -732,6 +945,7 @@ export async function runMonitoring(options: MonitoringRunOptions = {}) {
   const db = await getDatabase();
   const runNumber = updateRunCount(db);
   const timestamp = new Date().toISOString();
+  let hhSourceId: number | null = null;
 
   demoTemplates.forEach((_, index) => {
     const variant = createVariant(index, runNumber);
@@ -822,6 +1036,27 @@ export async function runMonitoring(options: MonitoringRunOptions = {}) {
     }
   });
 
+  if (process.env.NODE_ENV !== "test") {
+    const currentHhSourceId = getOrCreateHhSource(db);
+    hhSourceId = currentHhSourceId;
+
+    try {
+      const hhVacancies = await fetchHhVacancies();
+      hhVacancies.forEach((vacancy) => upsertVacancy(db, currentHhSourceId, "hh.ru", vacancy, timestamp, initialSeed));
+      runStatement(db, "UPDATE sources SET lastCheckedAt = ?, status = 'active', successRate = 95 WHERE id = ?", [
+        timestamp,
+        currentHhSourceId,
+      ]);
+      insertLog(db, "info", "hh.ru обновлён", `Загружено вакансий: ${hhVacancies.length}.`, "system");
+    } catch {
+      runStatement(db, "UPDATE sources SET lastCheckedAt = ?, status = 'error', successRate = 0 WHERE id = ?", [
+        timestamp,
+        currentHhSourceId,
+      ]);
+      insertLog(db, "warning", "hh.ru недоступен", "Не удалось загрузить вакансии из внешнего источника.", "system");
+    }
+  }
+
   if (runNumber > 2) {
     const archiveTarget = queryRows<{ id: number }>(
       db,
@@ -834,7 +1069,11 @@ export async function runMonitoring(options: MonitoringRunOptions = {}) {
     }
   }
 
-  runStatement(db, "UPDATE sources SET lastCheckedAt = ?, status = 'active'", [timestamp]);
+  if (hhSourceId) {
+    runStatement(db, "UPDATE sources SET lastCheckedAt = ?, status = 'active' WHERE id != ?", [timestamp, hhSourceId]);
+  } else {
+    runStatement(db, "UPDATE sources SET lastCheckedAt = ?, status = 'active'", [timestamp]);
+  }
   setMetaValue(db, "lastMonitoringRunAt", timestamp);
 
   if (ruleId) {

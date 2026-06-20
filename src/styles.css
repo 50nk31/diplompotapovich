@@ -21,7 +21,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  font-family: "Manrope", sans-serif;
+  font-family: Arial, sans-serif;
   color: var(--text);
   background: #101215;
 }
@@ -46,7 +46,7 @@ a {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 292px 1fr;
+  grid-template-columns: 260px 1fr;
   min-height: 100vh;
 }
 
@@ -55,37 +55,23 @@ a {
   top: 0;
   display: flex;
   flex-direction: column;
-  gap: 32px;
+  gap: 24px;
   height: 100vh;
-  padding: 32px 24px;
+  padding: 24px 20px;
   border-right: 1px solid var(--line);
   background: #0d0f12;
 }
 
 .brand-block {
   display: flex;
-  gap: 14px;
   align-items: center;
-}
-
-.brand-mark {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 4px;
-  border: 1px solid var(--line-strong);
-  color: var(--accent);
-  font-family: "Literata", serif;
-  font-size: 1.1rem;
-  letter-spacing: 0.16em;
 }
 
 .eyebrow {
   margin: 0 0 4px;
   color: var(--muted);
   font-size: 0.78rem;
-  letter-spacing: 0.18em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -99,7 +85,7 @@ a {
   border-radius: 4px;
   background: transparent;
   color: var(--text);
-  padding: 14px 16px;
+  padding: 11px 12px;
   text-align: left;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
@@ -120,7 +106,7 @@ a {
 }
 
 .main-area {
-  padding: 32px;
+  padding: 24px;
 }
 
 .topbar,
@@ -171,9 +157,8 @@ a {
 .page-intro h1,
 .topbar strong {
   margin: 0;
-  font-family: "Literata", serif;
-  font-size: clamp(1.85rem, 2.3vw, 3rem);
-  font-weight: 500;
+  font-size: 1.75rem;
+  font-weight: 600;
 }
 
 .intro-note {
@@ -220,7 +205,6 @@ a {
   overflow: hidden;
   border: 1px solid var(--line);
   background: var(--bg-panel);
-  box-shadow: var(--shadow);
 }
 
 .panel,
@@ -244,12 +228,12 @@ small {
 .metric-card strong {
   display: block;
   margin: 10px 0 6px;
-  font-size: 2.3rem;
+  font-size: 2rem;
   line-height: 1;
 }
 
 .button {
-  padding: 12px 18px;
+  padding: 10px 14px;
   border: 1px solid var(--line-strong);
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.02);
@@ -332,7 +316,7 @@ small {
   border: 1px solid transparent;
   border-radius: 999px;
   font-size: 0.78rem;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 

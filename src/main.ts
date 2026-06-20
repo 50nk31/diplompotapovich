@@ -113,7 +113,6 @@ function renderShell(content: string) {
     <div class="app-shell">
       <aside class="sidebar">
         <div class="brand-block">
-          <span class="brand-mark">VM</span>
           <div>
             <p class="eyebrow">Информационная система</p>
             <strong>Мониторинг вакансий</strong>
