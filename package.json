@@ -1,0 +1,48 @@
+{
+  "name": "vacancy-monitoring-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Информационная система для автоматического мониторинга вакансий различных специальностей.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "vite",
+    "dev:server": "tsx watch api/server.ts",
+    "build": "vite build && tsc -p tsconfig.server.json",
+    "start": "node server-dist/api/server.js",
+    "check": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit && vitest run",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "vacancies",
+    "monitoring",
+    "typescript",
+    "express",
+    "vite"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.7.9",
+    "chart.js": "^4.4.7",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "sql.js": "^1.13.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "@types/sql.js": "^1.4.9",
+    "@types/supertest": "^6.0.3",
+    "concurrently": "^9.1.2",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5",
+    "vitest": "^2.1.8"
+  }
+}
