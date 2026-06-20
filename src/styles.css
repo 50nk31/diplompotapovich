@@ -297,9 +297,17 @@ small {
 .source-stack,
 .timeline,
 .stack-form,
-.log-table {
+.log-table,
+.stat-stack,
+.button-row,
+.empty-inline,
+.row-main {
   display: grid;
   gap: 12px;
+}
+
+.compact-list {
+  gap: 10px;
 }
 
 .list-row,
@@ -334,6 +342,10 @@ small {
   display: grid;
   gap: 6px;
   text-align: right;
+}
+
+.row-main {
+  gap: 6px;
 }
 
 .status-pill,
@@ -462,6 +474,44 @@ tbody tr:hover,
   display: grid;
   grid-template-columns: 120px 1fr;
   gap: 8px;
+}
+
+.detail-list dt,
+.detail-list dd,
+.panel h2,
+.panel h3 {
+  margin: 0;
+}
+
+.stat-stack {
+  gap: 14px;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.stat-row:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.stat-row strong {
+  text-align: right;
+}
+
+.button-row {
+  grid-auto-flow: column;
+  justify-content: start;
+}
+
+.empty-inline {
+  gap: 14px;
 }
 
 .subsection {

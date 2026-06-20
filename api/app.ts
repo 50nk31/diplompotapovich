@@ -3,17 +3,23 @@ import cors from "cors";
 import { z } from "zod";
 
 import {
+  addCollectionItem,
+  createCollection,
   createRule,
   createSource,
   getAnalytics,
+  getCollectionDetails,
+  getCollections,
   getDashboardData,
   getLogs,
   getRules,
   getSources,
   getVacancies,
   getVacancyDetails,
+  removeCollectionItem,
   runMonitoring,
   updateRule,
+  updateSource,
 } from "./services.js";
 
 const querySchema = z.object({
@@ -42,6 +48,24 @@ const sourceSchema = z.object({
   successRate: z.number().min(0).max(100),
   responseTimeMs: z.number().min(50),
   isDemo: z.boolean(),
+});
+
+const collectionFiltersSchema = z.object({
+  search: z.string().default(""),
+  specialty: z.string().default(""),
+  location: z.string().default(""),
+  status: z.string().default(""),
+});
+
+const collectionSchema = z.object({
+  name: z.string().min(3),
+  description: z.string().min(6),
+  filters: collectionFiltersSchema,
+});
+
+const collectionItemSchema = z.object({
+  vacancyId: z.number().int().positive(),
+  note: z.string().trim().max(240).nullable().optional(),
 });
 
 export function createApp() {
@@ -89,8 +113,40 @@ export function createApp() {
     response.status(201).json(await createSource(sourceSchema.parse(request.body)));
   });
 
+  app.put("/api/sources/:id", async (request, response) => {
+    response.json(await updateSource(Number(request.params.id), sourceSchema.parse(request.body)));
+  });
+
+  app.get("/api/collections", async (_request, response) => {
+    response.json(await getCollections());
+  });
+
+  app.get("/api/collections/:id", async (request, response) => {
+    const result = await getCollectionDetails(Number(request.params.id));
+
+    if (!result) {
+      response.status(404).json({ message: "Подборка не найдена" });
+      return;
+    }
+
+    response.json(result);
+  });
+
+  app.post("/api/collections", async (request, response) => {
+    response.status(201).json(await createCollection(collectionSchema.parse(request.body)));
+  });
+
+  app.post("/api/collections/:id/items", async (request, response) => {
+    const payload = collectionItemSchema.parse(request.body);
+    response.json(await addCollectionItem(Number(request.params.id), payload.vacancyId, payload.note ?? null));
+  });
+
+  app.delete("/api/collections/:id/items/:vacancyId", async (request, response) => {
+    response.json(await removeCollectionItem(Number(request.params.id), Number(request.params.vacancyId)));
+  });
+
   app.post("/api/monitoring/run", async (_request, response) => {
-    response.json(await runMonitoring());
+    response.json(await runMonitoring({ trigger: "manual", actor: "operator" }));
   });
 
   app.get("/api/analytics/summary", async (_request, response) => {

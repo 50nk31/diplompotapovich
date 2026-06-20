@@ -7,6 +7,13 @@ export interface DashboardMetric {
   delta: string;
 }
 
+export interface DashboardSystemSummary {
+  activeSchedules: number;
+  collectionsCount: number;
+  archivedVacancies: number;
+  lastRunAt: string | null;
+}
+
 export interface SourceRecord {
   id: number;
   name: string;
@@ -30,6 +37,7 @@ export interface RuleRecord {
   scheduleCron: string;
   isActive: boolean;
   createdAt: string;
+  lastTriggeredAt: string | null;
 }
 
 export interface VacancyRecord {
@@ -78,6 +86,7 @@ export interface DashboardPayload {
   recentVacancies: VacancyRecord[];
   activeSources: SourceRecord[];
   recentLogs: LogRecord[];
+  systemSummary: DashboardSystemSummary;
 }
 
 export interface VacanciesPayload {
@@ -95,10 +104,42 @@ export interface AnalyticsPoint {
 export interface AnalyticsPayload {
   vacancyTimeline: AnalyticsPoint[];
   specialtyDistribution: AnalyticsPoint[];
+  regionDistribution: AnalyticsPoint[];
+  salaryBands: AnalyticsPoint[];
   topCompanies: AnalyticsPoint[];
   sourcePerformance: Array<{
     sourceName: string;
     successRate: number;
     responseTimeMs: number;
   }>;
+}
+
+export interface CollectionFilters {
+  search: string;
+  specialty: string;
+  location: string;
+  status: string;
+}
+
+export interface CollectionRecord {
+  id: number;
+  name: string;
+  description: string;
+  filters: CollectionFilters;
+  itemsCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectionItemRecord {
+  id: number;
+  collectionId: number;
+  vacancyId: number;
+  note: string | null;
+  addedAt: string;
+  vacancy: VacancyRecord;
+}
+
+export interface CollectionDetails extends CollectionRecord {
+  items: CollectionItemRecord[];
 }

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 
 import { createApp } from "./app.js";
+import { startMonitoringScheduler } from "./scheduler.js";
 import { ensureMonitoringSeed } from "./services.js";
 
 const PORT = Number(process.env.PORT ?? 4173);
@@ -12,6 +13,7 @@ const distPath = path.resolve(__dirname, "..", "..", "dist");
 
 async function startServer() {
   await ensureMonitoringSeed();
+  await startMonitoringScheduler();
 
   const app = createApp();
 

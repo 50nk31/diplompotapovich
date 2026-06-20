@@ -2,6 +2,10 @@ import type { Database } from "sql.js";
 
 import type {
   AnalyticsPayload,
+  CollectionDetails,
+  CollectionFilters,
+  CollectionItemRecord,
+  CollectionRecord,
   DashboardPayload,
   LogRecord,
   RuleRecord,
@@ -12,9 +16,29 @@ import type {
 } from "../shared/types.js";
 import { getDatabase, getScalarNumber, getScalarString, persistDatabase, queryRows, runStatement } from "./db.js";
 import { demoTemplates } from "./mock-source-data.js";
+import { notifyRulesChanged } from "./runtime.js";
 
-type InsertableRule = Omit<RuleRecord, "id" | "createdAt">;
+type InsertableRule = Omit<RuleRecord, "id" | "createdAt" | "lastTriggeredAt">;
 type InsertableSource = Omit<SourceRecord, "id" | "lastCheckedAt">;
+type InsertableCollection = {
+  name: string;
+  description: string;
+  filters: CollectionFilters;
+};
+
+type MonitoringRunOptions = {
+  initialSeed?: boolean;
+  trigger?: "seed" | "manual" | "schedule";
+  ruleId?: number | null;
+  actor?: string;
+};
+
+const defaultCollectionFilters: CollectionFilters = {
+  search: "",
+  specialty: "",
+  location: "",
+  status: "",
+};
 
 function mapSource(row: Record<string, unknown>): SourceRecord {
   return {
@@ -42,6 +66,7 @@ function mapRule(row: Record<string, unknown>): RuleRecord {
     scheduleCron: String(row.scheduleCron),
     isActive: Boolean(row.isActive),
     createdAt: String(row.createdAt),
+    lastTriggeredAt: row.lastTriggeredAt ? String(row.lastTriggeredAt) : null,
   };
 }
 
@@ -92,8 +117,60 @@ function mapHistory(row: Record<string, unknown>): VacancyHistoryRecord {
   };
 }
 
+function mapCollection(row: Record<string, unknown>): CollectionRecord {
+  return {
+    id: Number(row.id),
+    name: String(row.name),
+    description: String(row.description),
+    filters: row.filters ? { ...defaultCollectionFilters, ...JSON.parse(String(row.filters)) } : defaultCollectionFilters,
+    itemsCount: Number(row.itemsCount ?? 0),
+    createdAt: String(row.createdAt),
+    updatedAt: String(row.updatedAt),
+  };
+}
+
+function mapCollectionItem(row: Record<string, unknown>): CollectionItemRecord {
+  return {
+    id: Number(row.id),
+    collectionId: Number(row.collectionId),
+    vacancyId: Number(row.vacancyId),
+    note: row.note ? String(row.note) : null,
+    addedAt: String(row.addedAt),
+    vacancy: {
+      id: Number(row.vacancy_id),
+      externalId: String(row.vacancy_externalId),
+      title: String(row.vacancy_title),
+      company: String(row.vacancy_company),
+      location: String(row.vacancy_location),
+      specialty: String(row.vacancy_specialty),
+      salaryText: row.vacancy_salaryText ? String(row.vacancy_salaryText) : null,
+      salaryMin: row.vacancy_salaryMin === null ? null : Number(row.vacancy_salaryMin),
+      salaryMax: row.vacancy_salaryMax === null ? null : Number(row.vacancy_salaryMax),
+      employmentType: row.vacancy_employmentType ? String(row.vacancy_employmentType) : null,
+      sourceId: Number(row.vacancy_sourceId),
+      sourceName: String(row.vacancy_sourceName),
+      sourceUrl: String(row.vacancy_sourceUrl),
+      summary: String(row.vacancy_summary),
+      description: String(row.vacancy_description),
+      publishedAt: row.vacancy_publishedAt ? String(row.vacancy_publishedAt) : null,
+      firstSeenAt: String(row.vacancy_firstSeenAt),
+      lastSeenAt: String(row.vacancy_lastSeenAt),
+      status: row.vacancy_status as VacancyRecord["status"],
+      matchedRuleIds: JSON.parse(String(row.vacancy_matchedRuleIds)),
+    },
+  };
+}
+
 function escapeLike(value: string) {
   return value.replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+function setMetaValue(db: Database, key: string, value: string) {
+  runStatement(
+    db,
+    "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    [key, value],
+  );
 }
 
 function insertLog(db: Database, level: LogRecord["level"], title: string, description: string, actor = "system") {
@@ -107,13 +184,7 @@ function insertLog(db: Database, level: LogRecord["level"], title: string, descr
 function updateRunCount(db: Database) {
   const current = Number(getScalarString(db, "SELECT value FROM meta WHERE key = ?", ["monitorRunCount"]) || "0");
   const nextValue = String(current + 1);
-
-  runStatement(
-    db,
-    "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    ["monitorRunCount", nextValue],
-  );
-
+  setMetaValue(db, "monitorRunCount", nextValue);
   return current + 1;
 }
 
@@ -143,9 +214,9 @@ function createVariant(index: number, runNumber: number) {
 
   return {
     ...template,
-    summary: isUpdated ? `${template.summary} Отмечено обновление по оплате и условиям.` : template.summary,
+    summary: isUpdated ? `${template.summary} Зафиксировано изменение условий оплаты.` : template.summary,
     description: isUpdated
-      ? `${template.description} Дополнительно вакансия получила обновленные условия сотрудничества.`
+      ? `${template.description} Дополнительно отмечено обновление параметров предложения и условий сотрудничества.`
       : template.description,
     salaryText: `${salaryMin.toLocaleString("ru-RU")} - ${salaryMax.toLocaleString("ru-RU")} ₽`,
     salaryMin,
@@ -154,25 +225,81 @@ function createVariant(index: number, runNumber: number) {
   };
 }
 
+async function ensureStarterCollection(db: Database) {
+  const collectionsCount = getScalarNumber(db, "SELECT COUNT(*) AS value FROM saved_collections");
+  const vacancies = queryRows<Record<string, unknown>>(
+    db,
+    "SELECT * FROM vacancies WHERE status != 'archived' ORDER BY datetime(lastSeenAt) DESC LIMIT 2",
+  ).map(mapVacancy);
+
+  if (collectionsCount > 0 || vacancies.length === 0) {
+    return;
+  }
+
+  const now = new Date().toISOString();
+
+  runStatement(
+    db,
+    `INSERT INTO saved_collections (name, description, filters, createdAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
+      "Приоритетные позиции",
+      "Подборка для быстрого просмотра актуальных предложений с изменениями.",
+      JSON.stringify({ ...defaultCollectionFilters, status: "new" }),
+      now,
+      now,
+    ],
+  );
+
+  const collectionId = getScalarNumber(db, "SELECT last_insert_rowid() AS value");
+  vacancies.forEach((vacancy, index) => {
+    runStatement(
+      db,
+      "INSERT INTO collection_items (collectionId, vacancyId, note, addedAt) VALUES (?, ?, ?, ?)",
+      [collectionId, vacancy.id, index === 0 ? "Начальная контрольная позиция." : null, now],
+    );
+  });
+
+  insertLog(db, "info", "Создана стартовая подборка", "Сформирована первая подборка для обзора актуальных вакансий.", "system");
+}
+
+function getCollectionsBaseQuery() {
+  return `
+    SELECT c.*,
+      COUNT(ci.id) AS itemsCount
+    FROM saved_collections c
+    LEFT JOIN collection_items ci ON ci.collectionId = c.id
+    GROUP BY c.id
+  `;
+}
+
 export async function ensureMonitoringSeed() {
   const db = await getDatabase();
   const vacanciesCount = getScalarNumber(db, "SELECT COUNT(*) AS value FROM vacancies");
 
   if (vacanciesCount === 0) {
-    await runMonitoring(true);
+    await runMonitoring({ initialSeed: true, trigger: "seed" });
+    return;
   }
+
+  await ensureStarterCollection(db);
+  await persistDatabase();
 }
 
 export async function getDashboardData(): Promise<DashboardPayload> {
   await ensureMonitoringSeed();
   const db = await getDatabase();
   const totalVacancies = getScalarNumber(db, "SELECT COUNT(*) AS value FROM vacancies WHERE status != 'archived'");
+  const newVacancies = getScalarNumber(db, "SELECT COUNT(*) AS value FROM vacancies WHERE status = 'new'");
   const activeRules = getScalarNumber(db, "SELECT COUNT(*) AS value FROM monitoring_rules WHERE isActive = 1");
   const problemSources = getScalarNumber(db, "SELECT COUNT(*) AS value FROM sources WHERE status != 'active'");
   const recentChanges = getScalarNumber(
     db,
     "SELECT COUNT(*) AS value FROM vacancy_history WHERE changedAt >= datetime('now', '-7 day')",
   );
+  const collectionsCount = getScalarNumber(db, "SELECT COUNT(*) AS value FROM saved_collections");
+  const archivedVacancies = getScalarNumber(db, "SELECT COUNT(*) AS value FROM vacancies WHERE status = 'archived'");
+  const lastRunAt = getScalarString(db, "SELECT value FROM meta WHERE key = ?", ["lastMonitoringRunAt"]) || null;
 
   const recentVacancies = queryRows<Record<string, unknown>>(
     db,
@@ -180,7 +307,7 @@ export async function getDashboardData(): Promise<DashboardPayload> {
   ).map(mapVacancy);
   const activeSources = queryRows<Record<string, unknown>>(
     db,
-    "SELECT * FROM sources ORDER BY successRate DESC, responseTimeMs ASC LIMIT 4",
+    "SELECT * FROM sources ORDER BY status = 'active' DESC, successRate DESC, responseTimeMs ASC LIMIT 4",
   ).map(mapSource);
   const recentLogs = queryRows<Record<string, unknown>>(
     db,
@@ -189,14 +316,20 @@ export async function getDashboardData(): Promise<DashboardPayload> {
 
   return {
     metrics: [
-      { label: "Активные вакансии", value: totalVacancies.toString(), delta: "+12 за неделю" },
-      { label: "Правила мониторинга", value: activeRules.toString(), delta: "3 профиля отслеживания" },
-      { label: "Источники с ошибками", value: problemSources.toString(), delta: problemSources === 0 ? "Стабильный контур" : "Нужна проверка" },
-      { label: "Изменения за 7 дней", value: recentChanges.toString(), delta: "История обновлений" },
+      { label: "Активные вакансии", value: totalVacancies.toString(), delta: `${newVacancies} новых в текущем цикле` },
+      { label: "Правила мониторинга", value: activeRules.toString(), delta: `${activeRules} профилей выполняются автоматически` },
+      { label: "Источники с ошибками", value: problemSources.toString(), delta: problemSources === 0 ? "Контур работает стабильно" : "Требуется техническая проверка" },
+      { label: "Изменения за 7 дней", value: recentChanges.toString(), delta: `${collectionsCount} подборок сохранено оператором` },
     ],
     recentVacancies,
     activeSources,
     recentLogs,
+    systemSummary: {
+      activeSchedules: activeRules,
+      collectionsCount,
+      archivedVacancies,
+      lastRunAt,
+    },
   };
 }
 
@@ -235,7 +368,7 @@ export async function getVacancies(filters: {
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
   const items = queryRows<Record<string, unknown>>(
     db,
-    `SELECT * FROM vacancies ${where} ORDER BY 
+    `SELECT * FROM vacancies ${where} ORDER BY
       CASE status WHEN 'new' THEN 1 WHEN 'updated' THEN 2 WHEN 'unchanged' THEN 3 ELSE 4 END,
       datetime(lastSeenAt) DESC`,
     params,
@@ -277,7 +410,10 @@ export async function getVacancyDetails(id: number) {
 
 export async function getRules() {
   const db = await getDatabase();
-  return queryRows<Record<string, unknown>>(db, "SELECT * FROM monitoring_rules ORDER BY datetime(createdAt) DESC").map(mapRule);
+  return queryRows<Record<string, unknown>>(
+    db,
+    "SELECT * FROM monitoring_rules ORDER BY isActive DESC, datetime(createdAt) DESC",
+  ).map(mapRule);
 }
 
 export async function createRule(rule: InsertableRule) {
@@ -286,8 +422,8 @@ export async function createRule(rule: InsertableRule) {
 
   runStatement(
     db,
-    `INSERT INTO monitoring_rules (name, specialty, keywords, exclusions, regions, scheduleCron, isActive, createdAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO monitoring_rules (name, specialty, keywords, exclusions, regions, scheduleCron, isActive, createdAt, lastTriggeredAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     [
       rule.name,
       rule.specialty,
@@ -302,6 +438,7 @@ export async function createRule(rule: InsertableRule) {
 
   insertLog(db, "info", "Создано правило", `Добавлено правило "${rule.name}" для направления "${rule.specialty}".`, "operator");
   await persistDatabase();
+  notifyRulesChanged();
 
   return getRules();
 }
@@ -328,6 +465,7 @@ export async function updateRule(id: number, rule: InsertableRule) {
 
   insertLog(db, "info", "Правило обновлено", `Изменены параметры правила #${id}.`, "operator");
   await persistDatabase();
+  notifyRulesChanged();
 
   return getRules();
 }
@@ -356,10 +494,169 @@ export async function createSource(source: InsertableSource) {
     ],
   );
 
-  insertLog(db, "info", "Добавлен источник", `Источник "${source.name}" включен в мониторинг.`, "operator");
+  insertLog(db, "info", "Добавлен источник", `Источник "${source.name}" включен в контур мониторинга.`, "operator");
   await persistDatabase();
 
   return getSources();
+}
+
+export async function updateSource(id: number, source: InsertableSource) {
+  const db = await getDatabase();
+
+  runStatement(
+    db,
+    `UPDATE sources
+     SET name = ?, baseUrl = ?, specialty = ?, region = ?, status = ?, successRate = ?, responseTimeMs = ?, isDemo = ?
+     WHERE id = ?`,
+    [
+      source.name,
+      source.baseUrl,
+      source.specialty,
+      source.region,
+      source.status,
+      source.successRate,
+      source.responseTimeMs,
+      source.isDemo ? 1 : 0,
+      id,
+    ],
+  );
+
+  insertLog(db, "info", "Источник обновлён", `Параметры источника #${id} были изменены.`, "operator");
+  await persistDatabase();
+
+  return getSources();
+}
+
+export async function getCollections() {
+  await ensureMonitoringSeed();
+  const db = await getDatabase();
+  return queryRows<Record<string, unknown>>(
+    db,
+    `${getCollectionsBaseQuery()} ORDER BY datetime(c.updatedAt) DESC, c.name ASC`,
+  ).map(mapCollection);
+}
+
+export async function createCollection(collection: InsertableCollection) {
+  const db = await getDatabase();
+  const now = new Date().toISOString();
+
+  runStatement(
+    db,
+    `INSERT INTO saved_collections (name, description, filters, createdAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?)`,
+    [collection.name, collection.description, JSON.stringify(collection.filters), now, now],
+  );
+
+  insertLog(db, "info", "Подборка создана", `Создана подборка "${collection.name}".`, "operator");
+  await persistDatabase();
+
+  return getCollections();
+}
+
+export async function getCollectionDetails(id: number): Promise<CollectionDetails | null> {
+  await ensureMonitoringSeed();
+  const db = await getDatabase();
+  const collectionRow = queryRows<Record<string, unknown>>(db, `${getCollectionsBaseQuery()} HAVING c.id = ?`, [id])[0];
+
+  if (!collectionRow) {
+    return null;
+  }
+
+  const items = queryRows<Record<string, unknown>>(
+    db,
+    `SELECT
+      ci.id,
+      ci.collectionId,
+      ci.vacancyId,
+      ci.note,
+      ci.addedAt,
+      v.id AS vacancy_id,
+      v.externalId AS vacancy_externalId,
+      v.title AS vacancy_title,
+      v.company AS vacancy_company,
+      v.location AS vacancy_location,
+      v.specialty AS vacancy_specialty,
+      v.salaryText AS vacancy_salaryText,
+      v.salaryMin AS vacancy_salaryMin,
+      v.salaryMax AS vacancy_salaryMax,
+      v.employmentType AS vacancy_employmentType,
+      v.sourceId AS vacancy_sourceId,
+      v.sourceName AS vacancy_sourceName,
+      v.sourceUrl AS vacancy_sourceUrl,
+      v.summary AS vacancy_summary,
+      v.description AS vacancy_description,
+      v.publishedAt AS vacancy_publishedAt,
+      v.firstSeenAt AS vacancy_firstSeenAt,
+      v.lastSeenAt AS vacancy_lastSeenAt,
+      v.status AS vacancy_status,
+      v.matchedRuleIds AS vacancy_matchedRuleIds
+     FROM collection_items ci
+     INNER JOIN vacancies v ON v.id = ci.vacancyId
+     WHERE ci.collectionId = ?
+     ORDER BY datetime(ci.addedAt) DESC`,
+    [id],
+  ).map(mapCollectionItem);
+
+  return {
+    ...mapCollection(collectionRow),
+    items,
+  };
+}
+
+export async function addCollectionItem(collectionId: number, vacancyId: number, note: string | null) {
+  await ensureMonitoringSeed();
+  const db = await getDatabase();
+  const now = new Date().toISOString();
+
+  const collectionExists = getScalarNumber(db, "SELECT COUNT(*) AS value FROM saved_collections WHERE id = ?", [collectionId]) > 0;
+  const vacancyExists = getScalarNumber(db, "SELECT COUNT(*) AS value FROM vacancies WHERE id = ?", [vacancyId]) > 0;
+
+  if (!collectionExists) {
+    throw new Error("Подборка не найдена");
+  }
+
+  if (!vacancyExists) {
+    throw new Error("Вакансия не найдена");
+  }
+
+  const alreadyExists =
+    getScalarNumber(
+      db,
+      "SELECT COUNT(*) AS value FROM collection_items WHERE collectionId = ? AND vacancyId = ?",
+      [collectionId, vacancyId],
+    ) > 0;
+
+  if (!alreadyExists) {
+    runStatement(
+      db,
+      "INSERT INTO collection_items (collectionId, vacancyId, note, addedAt) VALUES (?, ?, ?, ?)",
+      [collectionId, vacancyId, note, now],
+    );
+  } else {
+    runStatement(
+      db,
+      "UPDATE collection_items SET note = ?, addedAt = ? WHERE collectionId = ? AND vacancyId = ?",
+      [note, now, collectionId, vacancyId],
+    );
+  }
+
+  runStatement(db, "UPDATE saved_collections SET updatedAt = ? WHERE id = ?", [now, collectionId]);
+  insertLog(db, "info", "Подборка обновлена", `Вакансия #${vacancyId} добавлена в подборку #${collectionId}.`, "operator");
+  await persistDatabase();
+
+  return getCollectionDetails(collectionId);
+}
+
+export async function removeCollectionItem(collectionId: number, vacancyId: number) {
+  const db = await getDatabase();
+  const now = new Date().toISOString();
+
+  runStatement(db, "DELETE FROM collection_items WHERE collectionId = ? AND vacancyId = ?", [collectionId, vacancyId]);
+  runStatement(db, "UPDATE saved_collections SET updatedAt = ? WHERE id = ?", [now, collectionId]);
+  insertLog(db, "info", "Элемент удалён из подборки", `Вакансия #${vacancyId} удалена из подборки #${collectionId}.`, "operator");
+  await persistDatabase();
+
+  return getCollectionDetails(collectionId);
 }
 
 export async function getAnalytics(): Promise<AnalyticsPayload> {
@@ -380,6 +677,31 @@ export async function getAnalytics(): Promise<AnalyticsPayload> {
      GROUP BY specialty
      ORDER BY count DESC`,
   );
+  const regionDistribution = queryRows<{ label: string; count: number }>(
+    db,
+    `SELECT location AS label, COUNT(*) AS count
+     FROM vacancies
+     WHERE status != 'archived'
+     GROUP BY location
+     ORDER BY count DESC
+     LIMIT 6`,
+  );
+  const salaryBands = queryRows<{ label: string; count: number }>(
+    db,
+    `SELECT
+      CASE
+        WHEN salaryMin IS NULL THEN 'Без диапазона'
+        WHEN salaryMin < 150000 THEN 'До 150 тыс.'
+        WHEN salaryMin < 180000 THEN '150–180 тыс.'
+        WHEN salaryMin < 220000 THEN '180–220 тыс.'
+        ELSE 'Свыше 220 тыс.'
+      END AS label,
+      COUNT(*) AS count
+     FROM vacancies
+     WHERE status != 'archived'
+     GROUP BY label
+     ORDER BY count DESC`,
+  );
   const topCompanies = queryRows<{ label: string; count: number }>(
     db,
     `SELECT company AS label, COUNT(*) AS count
@@ -394,18 +716,19 @@ export async function getAnalytics(): Promise<AnalyticsPayload> {
     "SELECT name AS sourceName, successRate, responseTimeMs FROM sources ORDER BY successRate DESC, responseTimeMs ASC",
   );
 
-  return { vacancyTimeline, specialtyDistribution, topCompanies, sourcePerformance };
+  return { vacancyTimeline, specialtyDistribution, regionDistribution, salaryBands, topCompanies, sourcePerformance };
 }
 
 export async function getLogs() {
   const db = await getDatabase();
   return queryRows<Record<string, unknown>>(
     db,
-    "SELECT * FROM system_logs ORDER BY datetime(createdAt) DESC LIMIT 50",
+    "SELECT * FROM system_logs ORDER BY datetime(createdAt) DESC LIMIT 60",
   ).map(mapLog);
 }
 
-export async function runMonitoring(initialSeed = false) {
+export async function runMonitoring(options: MonitoringRunOptions = {}) {
+  const { initialSeed = false, trigger = initialSeed ? "seed" : "manual", ruleId = null, actor = "system" } = options;
   const db = await getDatabase();
   const runNumber = updateRunCount(db);
   const timestamp = new Date().toISOString();
@@ -414,6 +737,7 @@ export async function runMonitoring(initialSeed = false) {
     const variant = createVariant(index, runNumber);
     const sourceId = getSourceIdBySpecialty(db, variant.specialty);
     const ruleIds = getRuleIdsBySpecialty(db, variant.specialty);
+    const sourceRow = queryRows<{ name: string; baseUrl: string }>(db, "SELECT name, baseUrl FROM sources WHERE id = ?", [sourceId])[0];
     const existingRow = queryRows<Record<string, unknown>>(
       db,
       "SELECT * FROM vacancies WHERE sourceId = ? AND externalId = ?",
@@ -439,8 +763,8 @@ export async function runMonitoring(initialSeed = false) {
           variant.salaryMax,
           variant.employmentType,
           sourceId,
-          queryRows<{ name: string }>(db, "SELECT name FROM sources WHERE id = ?", [sourceId])[0]?.name ?? "Источник",
-          queryRows<{ baseUrl: string }>(db, "SELECT baseUrl FROM sources WHERE id = ?", [sourceId])[0]?.baseUrl ?? "",
+          sourceRow?.name ?? "Источник",
+          sourceRow?.baseUrl ?? "",
           variant.summary,
           variant.description,
           createPublishedDate(index + runNumber),
@@ -511,15 +835,26 @@ export async function runMonitoring(initialSeed = false) {
   }
 
   runStatement(db, "UPDATE sources SET lastCheckedAt = ?, status = 'active'", [timestamp]);
-  insertLog(
-    db,
-    "info",
-    initialSeed ? "Первичное наполнение завершено" : "Мониторинг выполнен",
-    initialSeed
-      ? "Система создала начальный набор вакансий и истории изменений."
-      : `Выполнен цикл мониторинга #${runNumber}, обновлены карточки вакансий и показатели источников.`,
-  );
+  setMetaValue(db, "lastMonitoringRunAt", timestamp);
 
+  if (ruleId) {
+    runStatement(db, "UPDATE monitoring_rules SET lastTriggeredAt = ? WHERE id = ?", [timestamp, ruleId]);
+  }
+
+  if (initialSeed) {
+    await ensureStarterCollection(db);
+  }
+
+  const title =
+    trigger === "schedule" ? "Плановый мониторинг выполнен" : initialSeed ? "Первичное наполнение завершено" : "Мониторинг выполнен";
+  const description =
+    trigger === "schedule"
+      ? `Сработал плановый запуск по правилу #${ruleId ?? "—"}, контур обновил карточки вакансий и диагностику источников.`
+      : initialSeed
+        ? "Система создала начальный набор вакансий, историю изменений и стартовую подборку."
+        : `Выполнен цикл мониторинга #${runNumber}, обновлены карточки вакансий и показатели источников.`;
+
+  insertLog(db, "info", title, description, actor);
   await persistDatabase();
 
   return {

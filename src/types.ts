@@ -1,5 +1,9 @@
 export type {
   AnalyticsPayload,
+  CollectionDetails,
+  CollectionFilters,
+  CollectionItemRecord,
+  CollectionRecord,
   DashboardPayload,
   LogRecord,
   RuleRecord,

@@ -1,4 +1,5 @@
 import type { RuleRecord } from "../types";
+import { formatDate } from "../utils";
 
 export function renderRules(rules: RuleRecord[]) {
   return `
@@ -32,6 +33,16 @@ export function renderRules(rules: RuleRecord[]) {
                   <p><strong>Ключевые слова:</strong> ${rule.keywords.join(", ") || "Не заданы"}</p>
                   <p><strong>Исключения:</strong> ${rule.exclusions.join(", ") || "Нет"}</p>
                   <p><strong>Cron:</strong> ${rule.scheduleCron}</p>
+                  <p><strong>Последний запуск:</strong> ${formatDate(rule.lastTriggeredAt)}</p>
+                  <div class="button-row">
+                    <button
+                      class="button"
+                      type="button"
+                      data-toggle-rule="${rule.id}"
+                    >
+                      ${rule.isActive ? "Остановить правило" : "Включить правило"}
+                    </button>
+                  </div>
                 </article>
               `,
             )

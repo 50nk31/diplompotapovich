@@ -1,4 +1,4 @@
-import type { VacancyHistoryRecord, VacancyRecord, VacanciesPayload } from "../types";
+import type { CollectionRecord, VacancyHistoryRecord, VacancyRecord, VacanciesPayload } from "../types";
 import { formatDate, getStatusLabel } from "../utils";
 
 export function renderVacancies(
@@ -6,6 +6,7 @@ export function renderVacancies(
   selectedVacancy: VacancyRecord | null,
   history: VacancyHistoryRecord[],
   filters: { search: string; specialty: string; location: string; status: string },
+  collections: CollectionRecord[],
 ) {
   return `
     <section class="page-intro">
@@ -115,6 +116,36 @@ export function renderVacancies(
                   <div><dt>Опубликовано</dt><dd>${formatDate(selectedVacancy.publishedAt)}</dd></div>
                 </dl>
                 <p class="muted">${selectedVacancy.description}</p>
+                <div class="subsection">
+                  <h3>Добавить в подборку</h3>
+                  ${
+                    collections.length > 0
+                      ? `
+                        <form id="save-vacancy-form" class="stack-form">
+                          <input type="hidden" name="vacancyId" value="${selectedVacancy.id}" />
+                          <label>
+                            <span>Подборка</span>
+                            <select name="collectionId" required>
+                              ${collections
+                                .map((collection) => `<option value="${collection.id}">${collection.name}</option>`)
+                                .join("")}
+                            </select>
+                          </label>
+                          <label>
+                            <span>Заметка</span>
+                            <input type="text" name="note" placeholder="Короткая причина сохранения" />
+                          </label>
+                          <button class="button" type="submit">Сохранить вакансию</button>
+                        </form>
+                      `
+                      : `
+                        <div class="empty-inline">
+                          <p>Пока нет подборок для сохранения.</p>
+                          <button class="button" type="button" data-link="/collections">Создать подборку</button>
+                        </div>
+                      `
+                  }
+                </div>
                 <div class="subsection">
                   <h3>История изменений</h3>
                   <div class="list-stack">

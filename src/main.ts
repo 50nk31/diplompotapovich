@@ -3,29 +3,48 @@ import "./styles.css";
 import { Chart, type ChartConfiguration, registerables } from "chart.js";
 
 import {
+  addVacancyToCollection,
+  createCollection,
   createRule,
   createSource,
   getAnalytics,
+  getCollectionDetails,
+  getCollections,
   getDashboard,
   getLogs,
   getRules,
   getSources,
   getVacancies,
   getVacancyDetails,
+  removeVacancyFromCollection,
   runMonitoring,
+  updateRule,
+  updateSource,
 } from "./api";
 import { renderAnalytics } from "./pages/analytics";
+import { renderCollections } from "./pages/collections";
 import { renderDashboard } from "./pages/dashboard";
 import { renderLogs } from "./pages/logs";
 import { renderRules } from "./pages/rules";
 import { renderSources } from "./pages/sources";
 import { renderVacancies } from "./pages/vacancies";
-import type { AnalyticsPayload, DashboardPayload, LogRecord, RuleRecord, SourceRecord, VacancyHistoryRecord, VacancyRecord, VacanciesPayload } from "./types";
+import type {
+  AnalyticsPayload,
+  CollectionDetails,
+  CollectionRecord,
+  DashboardPayload,
+  LogRecord,
+  RuleRecord,
+  SourceRecord,
+  VacancyHistoryRecord,
+  VacancyRecord,
+  VacanciesPayload,
+} from "./types";
 import { splitCommaValues } from "./utils";
 
 Chart.register(...registerables);
 
-type RouteKey = "/" | "/vacancies" | "/rules" | "/sources" | "/analytics" | "/logs";
+type RouteKey = "/" | "/vacancies" | "/rules" | "/sources" | "/analytics" | "/logs" | "/collections";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 
@@ -42,6 +61,7 @@ const routeTitles: Record<RouteKey, string> = {
   "/sources": "Источники данных",
   "/analytics": "Аналитика",
   "/logs": "Журнал событий",
+  "/collections": "Подборки",
 };
 
 const state: {
@@ -54,6 +74,8 @@ const state: {
   sources: SourceRecord[];
   analytics: AnalyticsPayload | null;
   logs: LogRecord[];
+  collections: CollectionRecord[];
+  selectedCollection: CollectionDetails | null;
   filters: { search: string; specialty: string; location: string; status: string };
   message: string;
 } = {
@@ -66,6 +88,8 @@ const state: {
   sources: [],
   analytics: null,
   logs: [],
+  collections: [],
+  selectedCollection: null,
   filters: { search: "", specialty: "", location: "", status: "" },
   message: "",
 };
@@ -73,7 +97,7 @@ const state: {
 const charts = new Map<string, Chart>();
 
 function normalizeRoute(pathname: string): RouteKey {
-  return ["/", "/vacancies", "/rules", "/sources", "/analytics", "/logs"].includes(pathname)
+  return ["/", "/vacancies", "/rules", "/sources", "/analytics", "/logs", "/collections"].includes(pathname)
     ? (pathname as RouteKey)
     : "/";
 }
@@ -153,6 +177,23 @@ async function selectVacancy(id: number) {
   state.vacancyHistory = details.history;
 }
 
+async function refreshCollections(selectedId?: number) {
+  state.collections = await getCollections();
+
+  if (state.collections.length === 0) {
+    state.selectedCollection = null;
+    return;
+  }
+
+  const targetId = selectedId ?? state.selectedCollection?.id ?? state.collections[0]?.id;
+  if (!targetId) {
+    state.selectedCollection = null;
+    return;
+  }
+
+  state.selectedCollection = await getCollectionDetails(targetId);
+}
+
 async function loadRouteData() {
   switch (state.route) {
     case "/":
@@ -166,6 +207,11 @@ async function loadRouteData() {
         }
       });
       state.vacancies = await getVacancies(params);
+      state.collections = await getCollections();
+      if (!state.selectedVacancy || !state.vacancies.items.some((item) => item.id === state.selectedVacancy?.id)) {
+        state.selectedVacancy = null;
+        state.vacancyHistory = [];
+      }
       if (!state.selectedVacancy && state.vacancies.items[0]) {
         await selectVacancy(state.vacancies.items[0].id);
       }
@@ -183,6 +229,9 @@ async function loadRouteData() {
     case "/logs":
       state.logs = await getLogs();
       break;
+    case "/collections":
+      await refreshCollections();
+      break;
   }
 }
 
@@ -191,15 +240,17 @@ function getPageContent() {
     case "/":
       return renderDashboard(state.dashboard!);
     case "/vacancies":
-      return renderVacancies(state.vacancies!, state.selectedVacancy, state.vacancyHistory, state.filters);
+      return renderVacancies(state.vacancies!, state.selectedVacancy, state.vacancyHistory, state.filters, state.collections);
     case "/rules":
       return renderRules(state.rules);
     case "/sources":
       return renderSources(state.sources);
     case "/analytics":
-      return renderAnalytics();
+      return renderAnalytics(state.analytics!);
     case "/logs":
       return renderLogs(state.logs);
+    case "/collections":
+      return renderCollections(state.collections, state.selectedCollection, state.filters);
   }
 }
 
@@ -255,9 +306,7 @@ function mountRouteActions() {
       isActive: Boolean(formData.get("isActive")),
     });
     form.reset();
-    state.message = "Правило сохранено.";
-    renderShell(getPageContent());
-    mountRouteActions();
+    await loadAndRender("Правило сохранено.");
   });
 
   document.getElementById("source-form")?.addEventListener("submit", async (event) => {
@@ -275,15 +324,111 @@ function mountRouteActions() {
       isDemo: false,
     });
     form.reset();
-    state.message = "Источник добавлен.";
-    renderShell(getPageContent());
-    mountRouteActions();
+    await loadAndRender("Источник добавлен.");
+  });
+
+  document.getElementById("collection-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget as HTMLFormElement;
+    const formData = new FormData(form);
+
+    state.collections = await createCollection({
+      name: String(formData.get("name") ?? ""),
+      description: String(formData.get("description") ?? ""),
+      filters: {
+        search: String(formData.get("search") ?? ""),
+        specialty: String(formData.get("specialty") ?? ""),
+        location: String(formData.get("location") ?? ""),
+        status: String(formData.get("status") ?? ""),
+      },
+    });
+
+    const newestCollectionId = state.collections[0]?.id;
+    if (newestCollectionId) {
+      state.selectedCollection = await getCollectionDetails(newestCollectionId);
+    }
+
+    form.reset();
+    await loadAndRender("Подборка создана.");
+  });
+
+  document.getElementById("save-vacancy-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget as HTMLFormElement);
+    const collectionId = Number(formData.get("collectionId"));
+    const vacancyId = Number(formData.get("vacancyId"));
+    const note = String(formData.get("note") ?? "").trim() || null;
+
+    await addVacancyToCollection(collectionId, { vacancyId, note });
+    state.collections = await getCollections();
+    await loadAndRender("Вакансия сохранена в подборку.");
   });
 
   document.querySelector("[data-action='run-monitoring']")?.addEventListener("click", async () => {
     const result = await runMonitoring();
-    state.message = `Проверка завершена. Цикл #${result.runNumber}, всего вакансий: ${result.totalVacancies}.`;
-    await loadAndRender();
+    await loadAndRender(`Проверка завершена. Цикл #${result.runNumber}, всего вакансий: ${result.totalVacancies}.`);
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-toggle-rule]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const rule = state.rules.find((item) => item.id === Number(button.dataset.toggleRule));
+      if (!rule) {
+        return;
+      }
+
+      state.rules = await updateRule(rule.id, {
+        name: rule.name,
+        specialty: rule.specialty,
+        keywords: rule.keywords,
+        exclusions: rule.exclusions,
+        regions: rule.regions,
+        scheduleCron: rule.scheduleCron,
+        isActive: !rule.isActive,
+      });
+      await loadAndRender(rule.isActive ? "Правило остановлено." : "Правило снова активно.");
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-toggle-source]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const source = state.sources.find((item) => item.id === Number(button.dataset.toggleSource));
+      if (!source) {
+        return;
+      }
+
+      state.sources = await updateSource(source.id, {
+        name: source.name,
+        baseUrl: source.baseUrl,
+        specialty: source.specialty,
+        region: source.region,
+        status: source.status === "active" ? "paused" : "active",
+        successRate: source.successRate,
+        responseTimeMs: source.responseTimeMs,
+        isDemo: source.isDemo,
+      });
+      await loadAndRender(source.status === "active" ? "Источник поставлен на паузу." : "Источник снова активен.");
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-select-collection]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const collectionId = Number(button.dataset.selectCollection);
+      state.selectedCollection = await getCollectionDetails(collectionId);
+      renderShell(getPageContent());
+      mountRouteActions();
+    });
+  });
+
+  document.querySelectorAll<HTMLElement>("[data-remove-collection-item]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!state.selectedCollection) {
+        return;
+      }
+
+      await removeVacancyFromCollection(state.selectedCollection.id, Number(button.dataset.removeCollectionItem));
+      await refreshCollections(state.selectedCollection.id);
+      await loadAndRender("Элемент удалён из подборки.");
+    });
   });
 
   if (state.route === "/analytics" && state.analytics) {

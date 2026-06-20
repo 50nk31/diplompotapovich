@@ -48,4 +48,35 @@ describe("vacancy monitoring api", () => {
     expect(response.body.runNumber).toBeGreaterThan(0);
     expect(response.body.totalVacancies).toBeGreaterThan(0);
   });
+
+  it("creates a collection and adds a vacancy to it", async () => {
+    const app = createApp();
+
+    const createCollectionResponse = await request(app).post("/api/collections").send({
+      name: "Приоритетные вакансии",
+      description: "Выборка для быстрого просмотра изменений",
+      filters: {
+        search: "",
+        specialty: "Frontend-разработка",
+        location: "",
+        status: "new",
+      },
+    });
+
+    expect(createCollectionResponse.status).toBe(201);
+    expect(createCollectionResponse.body.some((item: { name: string }) => item.name === "Приоритетные вакансии")).toBe(true);
+
+    const vacanciesResponse = await request(app).get("/api/vacancies");
+    const vacancyId = vacanciesResponse.body.items[0]?.id;
+    const collectionId = createCollectionResponse.body.find((item: { name: string; id: number }) => item.name === "Приоритетные вакансии")?.id;
+
+    const addItemResponse = await request(app).post(`/api/collections/${collectionId}/items`).send({
+      vacancyId,
+      note: "Проверить после следующего запуска",
+    });
+
+    expect(addItemResponse.status).toBe(200);
+    expect(addItemResponse.body.items).toHaveLength(1);
+    expect(addItemResponse.body.items[0].vacancy.id).toBe(vacancyId);
+  });
 });

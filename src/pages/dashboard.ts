@@ -25,6 +25,54 @@ export function renderDashboard(data: DashboardPayload) {
         .join("")}
     </section>
 
+    <section class="card-grid">
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Состояние контура</h2>
+          <span class="panel-meta">Ключевые параметры работы</span>
+        </div>
+        <div class="stat-stack">
+          <div class="stat-row">
+            <span>Активные расписания</span>
+            <strong>${data.systemSummary.activeSchedules}</strong>
+          </div>
+          <div class="stat-row">
+            <span>Сохранённые подборки</span>
+            <strong>${data.systemSummary.collectionsCount}</strong>
+          </div>
+          <div class="stat-row">
+            <span>Архивные позиции</span>
+            <strong>${data.systemSummary.archivedVacancies}</strong>
+          </div>
+          <div class="stat-row">
+            <span>Последний запуск</span>
+            <strong>${formatDate(data.systemSummary.lastRunAt)}</strong>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-head">
+          <h2>Режим обработки</h2>
+          <span class="panel-meta">Как работает наблюдение</span>
+        </div>
+        <div class="list-stack compact-list">
+          <div class="history-row">
+            <strong>Автоматический запуск</strong>
+            <p>Каждое активное правило участвует в плановом цикле без ручного вмешательства.</p>
+          </div>
+          <div class="history-row">
+            <strong>Контроль изменений</strong>
+            <p>Система фиксирует обновления оплаты, статуса и появления новых карточек.</p>
+          </div>
+          <div class="history-row">
+            <strong>Работа с подборками</strong>
+            <p>Релевантные вакансии можно сохранять для повторного просмотра и дальнейшего анализа.</p>
+          </div>
+        </div>
+      </article>
+    </section>
+
     <section class="content-grid">
       <article class="panel">
         <div class="panel-head">

@@ -34,6 +34,15 @@ export function renderSources(sources: SourceRecord[]) {
                   <p><strong>Успешность:</strong> ${source.successRate}%</p>
                   <p><strong>Ответ:</strong> ${source.responseTimeMs} мс</p>
                   <p><strong>Последняя проверка:</strong> ${formatDate(source.lastCheckedAt)}</p>
+                  <div class="button-row">
+                    <button
+                      class="button"
+                      type="button"
+                      data-toggle-source="${source.id}"
+                    >
+                      ${source.status === "active" ? "Поставить на паузу" : "Вернуть в работу"}
+                    </button>
+                  </div>
                 </article>
               `,
             )

@@ -26,6 +26,16 @@ function getDatabasePath() {
     : DEFAULT_DB_PATH;
 }
 
+function tableHasColumn(db: Database, tableName: string, columnName: string) {
+  return queryRows<{ name: string }>(db, `PRAGMA table_info(${tableName})`).some((row) => row.name === columnName);
+}
+
+function ensureColumn(db: Database, tableName: string, columnName: string, definition: string) {
+  if (!tableHasColumn(db, tableName, columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition};`);
+  }
+}
+
 function createSchema(db: Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
@@ -55,7 +65,8 @@ function createSchema(db: Database) {
       regions TEXT NOT NULL,
       scheduleCron TEXT NOT NULL,
       isActive INTEGER NOT NULL DEFAULT 1,
-      createdAt TEXT NOT NULL
+      createdAt TEXT NOT NULL,
+      lastTriggeredAt TEXT
     );
 
     CREATE TABLE IF NOT EXISTS vacancies (
@@ -101,7 +112,29 @@ function createSchema(db: Database) {
       createdAt TEXT NOT NULL,
       actor TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS saved_collections (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      description TEXT NOT NULL,
+      filters TEXT NOT NULL,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS collection_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      collectionId INTEGER NOT NULL,
+      vacancyId INTEGER NOT NULL,
+      note TEXT,
+      addedAt TEXT NOT NULL,
+      FOREIGN KEY (collectionId) REFERENCES saved_collections(id),
+      FOREIGN KEY (vacancyId) REFERENCES vacancies(id),
+      UNIQUE(collectionId, vacancyId)
+    );
   `);
+
+  ensureColumn(db, "monitoring_rules", "lastTriggeredAt", "TEXT");
 }
 
 function saveDatabaseToFile(db: Database) {
@@ -137,8 +170,8 @@ function insertSeedData(db: Database) {
 
     runStatement(
       db,
-      `INSERT INTO monitoring_rules (name, specialty, keywords, exclusions, regions, scheduleCron, isActive, createdAt)
-       VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+      `INSERT INTO monitoring_rules (name, specialty, keywords, exclusions, regions, scheduleCron, isActive, createdAt, lastTriggeredAt)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL)`,
       [
         `Базовый мониторинг #${index + 1}`,
         source.specialty,
